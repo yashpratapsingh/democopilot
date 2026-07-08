@@ -1,0 +1,105 @@
+# Terraform Build Pipeline (Common)
+# Common pipeline must live directly under pipeline/
+
+trigger:
+  branches:
+    include:
+      - master
+      - develop
+      - feature/*
+  paths:
+    include:
+      - terraform/NonProd/**
+
+pr:
+  branches:
+    include:
+      - master
+      - develop
+  paths:
+    include:
+      - terraform/NonProd/**
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  TF_ROOT_DIR: terraform/NonProd
+  TF_VERSION: '1.8.5'
+  TFSEC_VERSION: '1.28.13'
+  ENABLE_TERRAFORM_PLAN: 'false'
+
+stages:
+  - stage: Build
+    displayName: Terraform Build Checks
+    jobs:
+      - job: TerraformChecks
+        displayName: fmt validate lint security plan
+        strategy:
+          matrix:
+            synapse:
+              TF_WORKING_DIR: terraform/NonProd/synapse
+            logic_app:
+              TF_WORKING_DIR: terraform/NonProd/logic-app
+        steps:
+          - script: |
+              set -e
+              temp_dir=$(mktemp -d)
+              curl -fsSL -o "$temp_dir/terraform.zip" https://releases.hashicorp.com/terraform/$(TF_VERSION)/terraform_$(TF_VERSION)_linux_amd64.zip
+              unzip -o "$temp_dir/terraform.zip" -d "$temp_dir"
+              sudo mv "$temp_dir/terraform" /usr/local/bin/terraform
+              terraform version
+            displayName: Install Terraform CLI
+
+          - script: terraform fmt -check -recursive
+            displayName: terraform fmt check
+            workingDirectory: $(TF_WORKING_DIR)
+
+          - script: terraform init -backend=false -reconfigure
+            displayName: terraform init (backend disabled for build)
+            workingDirectory: $(TF_WORKING_DIR)
+
+          - script: terraform validate
+            displayName: terraform validate
+            workingDirectory: $(TF_WORKING_DIR)
+
+          - script: |
+              set -e
+              curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
+              TFLINT_BIN=$(command -v tflint || echo "./bin/tflint")
+              "$TFLINT_BIN" --version
+              "$TFLINT_BIN" --init
+              "$TFLINT_BIN" --format compact
+            displayName: tflint
+            workingDirectory: $(TF_WORKING_DIR)
+
+          - script: |
+              set -e
+              TFSEC_URL="https://github.com/aquasecurity/tfsec/releases/download/v${TFSEC_VERSION}/tfsec-linux-amd64"
+              curl -fsSL -o /tmp/tfsec "$TFSEC_URL"
+              chmod +x /tmp/tfsec
+              sudo mv /tmp/tfsec /usr/local/bin/tfsec
+              tfsec --version
+              tfsec . --soft-fail=false
+            displayName: tfsec
+            workingDirectory: $(TF_WORKING_DIR)
+
+          - script: |
+              if [ "$ENABLE_TERRAFORM_PLAN" = "true" ] && [ -n "$ARM_SUBSCRIPTION_ID" ]; then
+                terraform plan -refresh=false -lock=false -out=tfplan -var="subscription_id=$ARM_SUBSCRIPTION_ID"
+              else
+                echo "Skipping terraform plan in PR validation. Enable ENABLE_TERRAFORM_PLAN=true and provide ARM_SUBSCRIPTION_ID to run it."
+                printf 'terraform plan skipped in PR validation. Enable ENABLE_TERRAFORM_PLAN=true and provide ARM_SUBSCRIPTION_ID to run it.\n' > tfplan
+              fi
+            displayName: terraform plan (speculative)
+            workingDirectory: $(TF_WORKING_DIR)
+            env:
+              ENABLE_TERRAFORM_PLAN: $(ENABLE_TERRAFORM_PLAN)
+              ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+
+          - task: PublishBuildArtifacts@1
+            displayName: Publish tfplan artifact
+            inputs:
+              PathtoPublish: $(TF_WORKING_DIR)/tfplan
+              ArtifactName: tfplan-nonprod-databricks
+              publishLocation: Container
