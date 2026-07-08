@@ -1,0 +1,25 @@
+{
+  "servers": {
+    "github": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "headers": {
+        "Authorization": "Bearer ${env:GITHUB_MCP_PAT}"
+      }
+    },
+    "azure-devops": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@azure-devops/mcp",
+        "demoyashsingh",
+        "--authentication", "envvar",
+        "-d", "all"
+      ],
+      "env": {
+        "ADO_MCP_AUTH_TOKEN": "${env:AZURE_DEVOPS_PAT}"
+      }
+    }
+  }
+}
